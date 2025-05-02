@@ -8,6 +8,27 @@ const emit = defineEmits<{
   (e: 'newChatCreated', chat: Chat): void
 }>()
 
+interface AgentResponse {
+  text: string
+  expectedNextInput?: string[]
+  attachments?: Array<{
+    imageUrl: string
+    type: string
+  }>
+}
+
+interface ChatMessage {
+  user: string
+  agent: AgentResponse[]
+}
+
+interface Chat {
+  id: string
+  session: string
+  sessionId: string
+  conversationHistory: ChatMessage[]
+}
+
 interface Message {
   id: number
   content: string
@@ -16,19 +37,7 @@ interface Message {
     imageUrl: string
     type: string
   }>
-}
-
-interface Chat {
-  id: string
-  session: string
-  sessionId: string
-  conversationHistory: Array<{
-    user: string
-    agent: Array<{ 
-      text: string
-      expectedNextInput?: string[]
-    }>
-  }>
+  agent?: AgentResponse[]
 }
 
 const currentChat = ref<Chat | null>(null)
@@ -42,6 +51,29 @@ const imagePreview = ref<string | null>(null)
 const expectedInput = ref<string | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 
+// Function to safely revoke object URL
+const revokeObjectURL = (url: string) => {
+  if (typeof window !== 'undefined') {
+    window.URL.revokeObjectURL(url)
+  }
+}
+
+// Function to handle file input click
+const handleFileInputClick = () => {
+  if (fileInput.value instanceof HTMLInputElement) {
+    fileInput.value.click()
+  }
+}
+
+// Function to clear image
+const clearImage = () => {
+  if (imagePreview.value) {
+    revokeObjectURL(imagePreview.value)
+  }
+  imagePreview.value = null
+  imageFile.value = null
+}
+
 // Watch for expected input type changes
 watch(() => currentChat.value?.conversationHistory, (newHistory) => {
   if (newHistory && newHistory.length > 0) {
@@ -54,7 +86,7 @@ watch(() => currentChat.value?.conversationHistory, (newHistory) => {
   }
 }, { deep: true })
 
-const currentMessages = computed(() => {
+const currentMessages = computed<Message[]>(() => {
   if (!currentChat.value && !isNewChat.value) return []
   
   if (isNewChat.value) {
@@ -66,11 +98,19 @@ const currentMessages = computed(() => {
     
     // Add user message
     if (entry.user) {
-      messages.push({
+      const userMessage: Message = {
         id: index * 2,
         content: entry.user,
         isUser: true
-      })
+      }
+      
+      // Find corresponding attachments in the conversation history
+      const attachments = entry.agent.find(a => a.attachments)?.attachments
+      if (attachments) {
+        userMessage.attachments = attachments
+      }
+      
+      messages.push(userMessage)
     }
     
     // Add AI response
@@ -78,7 +118,8 @@ const currentMessages = computed(() => {
       messages.push({
         id: index * 2 + 1,
         content: entry.agent[0].text,
-        isUser: false
+        isUser: false,
+        agent: entry.agent
       })
     }
     
@@ -162,7 +203,9 @@ const handleImageUpload = (event: Event) => {
   if (input.files && input.files[0]) {
     const file = input.files[0]
     imageFile.value = file
-    imagePreview.value = URL.createObjectURL(file)
+    if (typeof window !== 'undefined') {
+      imagePreview.value = window.URL.createObjectURL(file)
+    }
   }
 }
 
@@ -226,9 +269,7 @@ const sendMessage = async () => {
 
     // Clear image after adding to chat
     if (imageFile.value) {
-      URL.revokeObjectURL(imagePreview.value!)
-      imageFile.value = null
-      imagePreview.value = null
+      clearImage()
     }
 
     await scrollToBottom()
@@ -327,14 +368,18 @@ const handleNewChatCreated = (chat: Chat) => {
                     <div class="font-medium text-sm text-gray-900">You</div>
                     <div class="text-gray-800">{{ message.content }}</div>
                     <!-- Display attached images -->
-                    <div v-if="message.attachments?.length" class="mt-2 space-y-2">
-                      <img 
-                        v-for="(attachment, index) in message.attachments" 
-                        :key="index"
-                        :src="attachment.imageUrl" 
-                        :alt="'Uploaded image ' + (index + 1)"
-                        class="max-h-64 rounded-lg"
-                      />
+                    <div v-if="message.attachments && message.attachments.length > 0" class="mt-2 space-y-2">
+                      <div 
+                        v-for="(attachment, attachmentIndex) in message.attachments" 
+                        :key="`${message.id}-${attachmentIndex}`"
+                        class="relative inline-block"
+                      >
+                        <img 
+                          :src="attachment.imageUrl" 
+                          :alt="'Uploaded image ' + (attachmentIndex + 1)"
+                          class="max-h-64 rounded-lg"
+                        />
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -352,7 +397,10 @@ const handleNewChatCreated = (chat: Chat) => {
                       {{ message.content }}
                     </div>
                     <!-- Show image upload prompt if needed -->
-                    <div v-if="message.agent?.[0]?.expectedNextInput?.includes('image')" class="mt-2 text-sm text-blue-600">
+                    <div 
+                      v-if="message.agent && message.agent[0]?.expectedNextInput?.includes('image')" 
+                      class="mt-2 text-sm text-blue-600"
+                    >
                       Please upload an image to continue
                     </div>
                   </div>
@@ -388,7 +436,7 @@ const handleNewChatCreated = (chat: Chat) => {
             <div class="relative inline-block">
               <img :src="imagePreview" alt="Preview" class="max-h-48 rounded-lg" />
               <button
-                @click="() => { URL.revokeObjectURL(imagePreview); imagePreview = null; imageFile = null; }"
+                @click="clearImage"
                 class="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 hover:bg-red-600"
               >
                 <i-lucide-x class="w-4 h-4" />
@@ -409,7 +457,11 @@ const handleNewChatCreated = (chat: Chat) => {
               <div v-if="!imagePreview" class="space-y-2">
                 <i-lucide-image class="w-12 h-12 mx-auto text-gray-400" />
                 <div class="text-sm text-gray-600">
-                  <button type="button" @click="$refs.fileInput.click()" class="text-blue-500 hover:text-blue-600">
+                  <button 
+                    type="button" 
+                    @click="handleFileInputClick"
+                    class="text-blue-500 hover:text-blue-600"
+                  >
                     Click to upload
                   </button>
                   or drag and drop
